@@ -8,6 +8,12 @@ import csv
 import os
 from datetime import datetime
 import RPi.GPIO as GPIO
+#Need to add to pi
+import logging 
+import threading
+import queue
+import Sensors as SensorHub
+import pipeline as Pipeline
 
 """CSV Specification
 humidity: relative humidity measured as a percentage
@@ -116,17 +122,22 @@ def run_imu(data_dict:dict):
     data_dict['mag_y'] = str(mag['y'])
     data_dict['mag_z'] = str(mag['z'])
 
+
+    
+
 #Function to control LED light sensors, blinking the LED light once
 def run_LED():
+    pin = 22
     #configures the LED GPIO
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
-    GPIO.setup(4, GPIO.OUT)
+    GPIO.setup(pin, GPIO.OUT)
     #turns the LED light on for 3.25 seconds, then off for 3.25 seconds
-    GPIO.output(4, GPIO.HIGH )
+    GPIO.output(pin, GPIO.HIGH )
     print("LED ON")
     time.sleep(3.25)
-    GPIO.output(4, GPIO.LOW)
+    GPIO.output(pin, GPIO.LOW)
+    print("LED OFF")
     time.sleep(3.25)    
     GPIO.cleanup()
  
@@ -156,9 +167,9 @@ def sampleSensors(data, csv_writer):
             camera.stop_preview() 
     except Exception as err:
         print("camera error: ", err)
-       
-def main() -> int:
-    duration = int(sys.argv[1])
+
+def readSensors(arg):
+    duration = int(arg)
     now = datetime.now()
     dt_string = now.strftime("%d_%H%M%S")
     with open(f'balloon_stats_{dt_string}.csv', 'w', newline='', buffering=1) as csv_file:
@@ -170,7 +181,80 @@ def main() -> int:
             sampleSensors(data, csv_writer)
             run_LED()
             time.sleep(6.5)       # sets capture interval to 1 minute
+
+#Communication btwn Pi and APRS 
+I2C_SLAVE1_ADDRESS = 11  #slave address
+
+# This function converts a string to an array of bytes.
+def ConvertStringsToBytes(src):
+  converted = []
+  for b in src:
+    converted.append(ord(b))
+  return converted
+
+def setupCom(I2C_SLAVE1_ADDRESS, data):
+    I2Cbus = smbus.SMBus(1)
+    with smbus.SMBus(1) as I2Cbus:
+        cmd = input("Enter command: ")
+
+        BytesToSend = ConvertStringsToBytes(cmd)
+        print("Sent " + str(I2C_SLAVE1_ADDRESS) + " the " + str(cmd) + " command.")
+        print(BytesToSend )
+        I2Cbus.write_i2c_block_data(I2C_SLAVE1_ADDRESS, 0x00, BytesToSend)
+        time.sleep(0.5)
+        while True:
+            try:
+                data=I2Cbus.read_i2c_block_data(slaveAddress,0x00,16)
+                print("recieve from periphery:")
+                print(data)
+            except:
+                print("remote i/o error")
+                time.sleep(0.5)
+    return 0
+
+
+SENTINEL = object()
+
+def SensorProducer(pipeline,event):
+    while not event.is_set():
+        data = SensorHub.readSensor(1)
+        logging.info("Producer got data: ", dict(data))    
+        pipeline.set_message(dict(data), "Producer")
+        event.set()
+        
+    pipeline.set_message(SENTINEL, "Producer")    
+    logging.info("Producer received EXIT event. Exiting")              
+
+
+def APRSconsumer(pipeline,event):
+    #setupCom(I2C_SLAVE1_ADDRESS)
+    
+    while not event.is_set() or not pipeline.empty():
+        message = pipeline.get_message("Consumer")
+        logging.info(
+            "Consumer storing message: %s  (queue size=%s)",
+            message,
+            pipeline.qsize(),
+        )
+
+    logging.info("Consumer received EXIT event. Exiting")
+
+                
+def main() -> int:
+    setupCom(I2C_SLAVE1_ADDRESS)
+    #readSensor(sys.argv[1])
+    data = SensorHub.readSensors(1)
+    
     return 0
 
 if __name__ == '__main__':
-    main()
+    #main()
+    format = "%(asctime)s: %(message)s"
+    logging.basicConfig(format=format, level=logging.INFO,datefmt="%H:%M:%S")
+    # logging.getLogger().setLevel(logging.DEBUG)
+
+    pipeline = Pipeline()
+    event = threading.Event()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        executor.submit(SensorProducer, pipeline,event )
+        executor.submit(APRSconsumer, pipeline, event )
