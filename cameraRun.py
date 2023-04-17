@@ -27,6 +27,19 @@ mag_z: z-direction magnetic field in uT
 """
 HEADERS = ["time", "humidity", "humidity_temp", "pressure", "altitude", "altimeter_temp", "accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z", "mag_x", "mag_y", "mag_z"]
 
+#GPIO of LEDs on pi, arbitrary atm needs to be changed 
+LED_GREEN_GPIO = 4
+LED_BLUE_GPIO = 5
+LED_RED_GPIO = 6
+
+LED_array = [ LED_GREEN_GPIO , LED_BLUE_GPIO , LED_RED_GPIO]
+    
+#LED status is an array of bools that denotes state of code execution and correpsond with a LED being turned on in the pi circuitryfor physical representation
+#First bool is paired with the Green LED and denotes good status, code is running cleanly and no exceptions are being triggered
+#Second bool is paired with the Blue LED and denotes exception triggered status, code is still operational and running, but data collection has likely been compromised in some fashion
+#Third bool is paired with RED LED and denotes bad status, code has faulted in such a way that it is no longer executing and no data is being collected
+LED_status = [True, False, False] 
+
 def run_humidity(data_dict:dict):
     with SMBus(1) as bus:
 
@@ -130,20 +143,50 @@ def run_LED():
     time.sleep(3.25)    
     GPIO.cleanup()
  
+def LED_config():
+    NUMBER_OF_LEDs = len(LED_array)
+    
+    #configures the all LED GPIO
+    for i in range(NUMBER_OF_LEDs):
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
+        GPIO.setup(LED_array[i], GPIO.OUT)
+        
+        
+def LED_signal():
+    if LED_status[0]:
+        GPIO.output(GPIO_GREEN_LED, GPIO.HIGH )
+    if LED_status[1]:
+        GPIO.output(GPIO_BLUE_LED, GPIO.HIGH )
+    if LED_status[2]:
+        GPIO.output(GPIO_RED_LED, GPIO.HIGH )
+        GPIO.output(GPIO_BLUE_LED, GPIO.LOW )
+        GPIO.output(GPIO_GREEN_LED, GPIO.LOW )
+        GPIO.cleanup() 
+        
+        
+#Currently cannot identify (perhaps even call) a crictical failure, thus only Green and Blue LEDs will be active
+# Current Exception safety is wide-catching but vague, should catch most error with sampling sensors, but specific handing needs to be implemented
 def sampleSensors(data, csv_writer):
     try:
         run_altimeter(data)
     except Exception as err:
+        LED_status[1] = True
+        LED_signal()
         print("altimeter sensor error: ", err)
         
     try:
         run_humidity(data)
     except Exception as err:
+        LED_status[1] = True
+        LED_signal()
         print("humidity sensor error: ", err)
     
     try:    
         run_imu(data)
     except Exception as err: 
+        LED_status[1] = True
+        LED_signal()
         print("imu sensor error: ", err)
         
     csv_writer.writerow(data)
@@ -155,6 +198,8 @@ def sampleSensors(data, csv_writer):
             camera.capture(f'/home/pi/pictures/picture{i}.jpeg', format='jpeg')
             camera.stop_preview() 
     except Exception as err:
+        LED_status[1] = True
+        LED_signal()
         print("camera error: ", err)
        
 def main() -> int:
